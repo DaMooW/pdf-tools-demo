@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>PDF 内容流逐行解剖：文字·图片·表格·列表·表单 如何被三个库解析</title>
+<style>
+:root{--ink:#1f2430;--mut:#6b7280;--bg:#fafbfc;--card:#fff;--acc:#2563eb;
+--code:#f6f8fa;--tx:#1d4ed8;--font:#7c3aed;--text:#0f766e;--draw:#b45309;
+--img:#15803d;--img2:#166534;--st:#64748b;--cur:#fff7e6}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;color:var(--ink);background:var(--bg);line-height:1.75}
+header{background:linear-gradient(120deg,#0f172a,#1e3a8a);color:#fff;padding:34px 40px}
+header h1{margin:0 0 10px;font-size:26px}
+header p{margin:4px 0;color:#cbd5e1;font-size:14px}
+main{max-width:1080px;margin:24px auto;padding:0 20px 80px}
+h2{font-size:21px;margin:48px 0 14px;border-left:5px solid var(--acc);padding-left:12px}
+h3{font-size:16px;margin:22px 0 8px;color:#0f172a}
+.card{background:var(--card);border:1px solid #e5e7eb;border-radius:10px;padding:18px 20px;margin:14px 0;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+code{background:#eef2f7;border-radius:4px;padding:1px 5px;font-size:13px;font-family:ui-monospace,Menlo,Consolas,monospace}
+pre{background:#0f172a;color:#e2e8f0;border-radius:8px;padding:14px 16px;overflow-x:auto;font-size:12.5px;line-height:1.6;font-family:ui-monospace,Menlo,Consolas,monospace}
+.muted{color:var(--mut);font-size:13px}
+.ok{color:#15803d}.warn{color:#b45309}.err{color:#b91c1c}
+/* 流逐行 */
+.stream{border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;background:#fff}
+.seg{border-bottom:1px dashed #e5e7eb}
+.seg:last-child{border-bottom:none}
+.segh{background:#f8fafc;padding:6px 14px;font-size:13px;display:flex;gap:10px;align-items:center}
+.segh b{color:#0f172a}
+.segspan{color:var(--mut);font-size:12px}
+.keybadge{background:var(--cur);color:#92400e;border:1px solid #f5d9a8;border-radius:4px;padding:0 6px;font-size:11px;font-weight:600}
+.segbody{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
+.srow{display:flex;gap:12px;padding:2px 14px;align-items:baseline}
+.srow:hover{background:#f1f5f9}
+.srow .ln{color:#9ca3af;min-width:34px;text-align:right;user-select:none}
+.srow code{white-space:pre;color:inherit}
+.srow .nt{color:var(--mut);white-space:pre-wrap;font-size:11.5px;font-family:-apple-system,"PingFang SC",sans-serif}
+.srow .nt.showtext{color:#0f766e;font-weight:600}
+.srow.tx code{color:var(--tx)} .srow.font code{color:var(--font)}
+.srow.text code{color:var(--text)} .srow.draw code{color:var(--draw)}
+.srow.img code{color:var(--img)} .srow.img2 code{color:var(--img2)}
+.srow.st code{color:var(--st)}
+/* 重点卡 */
+.keycard{border-left:4px solid var(--acc)}
+.keycard em{color:#92400e;font-style:normal;font-weight:600}
+/* 分类色块 */
+.cat{display:inline-block;border-radius:4px;padding:0 6px;font-size:11.5px;font-weight:600;margin-right:6px}
+.c-title{background:#dbeafe;color:#1d4ed8}.c-nar{background:#f3e8ff;color:#7c3aed}
+.c-list{background:#dcfce7;color:#15803d}.c-uncat{background:#f3f4f6;color:#6b7280}
+.c-footer{background:#ffedd5;color:#c2410c}.c-header{background:#fef9c3;color:#a16207}
+table{border-collapse:collapse;width:100%;margin:10px 0;font-size:13.5px}
+th,td{border:1px solid #dbe0e6;padding:7px 10px;text-align:left}
+th{background:#f1f5f9}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:800px){.two{grid-template-columns:1fr}}
+.note{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;font-size:13.5px;margin:10px 0}
+</style>
+</head>
+<body>
+<header>
+<h1>PDF 内容流逐行解剖讲义</h1>
+<p>对象：<code style="background:#1e293b;color:#93c5fd">data/generated/sample_mixed_all.pdf</code>
+（page 0 · 595×842pt · 本节全部内容来自原文，逐行可复现）</p>
+<p>三个库：PyMuPDF（对象树） · Unstructured fast（版面分组） · LlamaParse（云端语义重建）</p>
+</header>
+<main>
+
+<h2>0. 这张 PDF 的"目录"：一页 = 五个世界</h2>
+<div class="card">
+<p>398 行的内容流里，元素分布如下（全部为实测）：</p>
+<table>
+<tr><th>元素</th><th>在 PDF 里的形式</th><th>行号范围</th><th>谁最擅长</th></tr>
+<tr><td><b>文字</b>（标题/正文/中文）</td><td>BT/Tm/Tf/TJ 指令组</td><td>1-50</td><td>PyMuPDF（坐标）</td></tr>
+<tr><td><b>图片</b></td><td>cm + Do 两行</td><td>52-55</td><td>PyMuPDF（像素）</td></tr>
+<tr><td><b>表格</b></td><td>20×(re 矩形 + 文字)</td><td>65-183</td><td>PyMuPDF/LlamaParse</td></tr>
+<tr><td><b>列表</b></td><td>就是普通文本行（• 只是个字符）</td><td>L31-L48</td><td>Unstructured（语义）</td></tr>
+<tr><td><b>表单</b></td><td>不在内容流：/Annots 里的 Widget</td><td>L185 之后只有标签</td><td>PyMuPDF（唯一）</td></tr>
+</table>
+</div>
+
+<h2>1. 对象图：六个对象是"文字/图片/控件"的真身</h2>
+<div class="card">
+<h3>页对象（#1）→ 内容流 + 资源 + 注释</h3>
+<pre>&lt;&lt; /Type /Page /MediaBox [0 0 595 842]
+   /Contents 12 0 R              ← "程序"（398 行内容流）在对象 12
+   /Resources ...                ← 字体、图片 /fzImg0 的真身在这里
+   /Annots [...]                 ← 6 个表单控件挂在这里！
+   /Parent ... &gt;&gt;</pre>
+<h3>图片对象（DCTDecode = 一张 JPEG 包在 PDF 里）</h3>
+<pre>&lt;&lt; /Type /XObject /Subtype /Image /Filter /DCTDecode /BitsPerComponent 8 /Width 856 /Height 489 /ColorSpace 21 0 R /Length 25334 &gt;&gt;</pre>
+<h3>本页字体（9 个字体对象，多数字体被"子集化"嵌入）</h3>
+<div><code>#5</code> n/a Type1 <b>Helvetica</b><br><code>#8</code> ttf Type0 <b>ZHTBYO+Arial Unicode MS Regular</b></div>
+</div>
+
+<h2>2. 内容流逐行解剖（全 398 行）</h2>
+<p class="muted">颜色：<b style="color:#1d4ed8">蓝=文本指令</b> ·
+<b style="color:#7c3aed">紫=字体</b> · <b style="color:#0f766e">绿=文本内容</b> ·
+<b style="color:#b45309">橙=画线/矩形（表格）</b> · <b style="color:#15803d">深绿=图片</b> ·
+<b style="color:#64748b">灰=状态</b>。<br>
+每段下方有段落标签；绿色小字是程序根据坐标还原出的<b>显示文字</b>（由字体 ToUnicode 解出）。</p>
+<div class="stream">
+<div class="seg">
+  <div class="segh"><span class="keybadge">TX01</span><b>标题行（txt）</b><span class="segspan">L2-7 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">2</span><code>q</code></div><div class="srow tx"><span class="ln">3</span><code>BT</code></div><div class="srow tx"><span class="ln">4</span><code>1 0 0 1 60 772 Tm</code></div><div class="srow text"><span class="ln">5</span><code>/helv 19 Tf [&lt;412053616d706c6520446f63756d656e743a20546578742c20496d6167652c205461626c6520616e6420466f726d&gt;]TJ</code><span class="nt showtext">A Sample Document: Text, Image, Table and Form</span></div><div class="srow tx"><span class="ln">6</span><code>ET</code></div><div class="srow st"><span class="ln">7</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><b>空段</b><span class="segspan">L9-14 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">9</span><code>q</code></div><div class="srow tx"><span class="ln">10</span><code>BT</code></div><div class="srow tx"><span class="ln">11</span><code>1 0 0 1 60 747 Tm</code></div><div class="srow "><span class="ln">12</span><code>/helv 10.5 Tf .25 .25 .25 RG .25 .25 .25 rg [&lt;54686973205044462069732067656e65726174656420627920736372697074732f6d616b655f73616d706c655f706466732e707920746f2064656d6f6e7374726174652065787472616374696e6720666f7572206b696e6473206f6620656c656d656e74732066726f6d206f6e652066696c653a20746578742c20656d62656464656420696d616765732c207461626c657320616e642066696c6c61626c6520666f726d732e&gt;]TJ</code></div><div class="srow tx"><span class="ln">13</span><code>ET</code></div><div class="srow st"><span class="ln">14</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><span class="keybadge">CNL</span><b>中文段落（txt）</b><span class="segspan">L16-22 · 7 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">16</span><code>q</code></div><div class="srow tx"><span class="ln">17</span><code>BT</code></div><div class="srow text"><span class="ln">18</span><code>1 0 0 1 60 630.7771 Tm /cjk-noto 10.5 Tf [&lt;20bc38163e4456cc19f629b72e2d68d46b08497d20bc19e8003300270029&gt;]TJ</code><span class="nt showtext">中文段落：在实际项目中，PDF</span></div><div class="srow text"><span class="ln">19</span><code>1 0 0 1 60 615.7402 Tm /cjk-noto 10.5 Tf [&lt;267e538c269b3885259426ba2ba94c5c5e7c5c8f49133df2381611ed221a2c11213627505e83389d20f534a5356a3a963816218562a930c7220e47b7408626975e7c5c8f362144d719e8365f26653885&gt;]TJ</code><span class="nt showtext">可能同时包含多种语言的正文。例如产品说明书或招标文件通常使用混合语言排版，提取时</span></div><div class="srow text"><span class="ln">20</span><code>1 0 0 1 60 600.70327 Tm /cjk-noto 10.5 Tf [&lt;698f5c103f77339e2de621e2209d51a54a9011ed&gt;]TJ</code><span class="nt showtext">需要注意字体与编码。</span></div><div class="srow tx"><span class="ln">21</span><code>ET</code></div><div class="srow st"><span class="ln">22</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><b>· Item 1: coordinates of each text span</b><span class="segspan">L24-29 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">24</span><code>q</code></div><div class="srow tx"><span class="ln">25</span><code>BT</code></div><div class="srow tx"><span class="ln">26</span><code>1 0 0 1 66 557 Tm</code></div><div class="srow text"><span class="ln">27</span><code>/helv 10.5 Tf [&lt;b7204974656d20313a20636f6f7264696e61746573206f6620656163682074657874207370616e&gt;]TJ</code><span class="nt showtext">· Item 1: coordinates of each text span</span></div><div class="srow tx"><span class="ln">28</span><code>ET</code></div><div class="srow st"><span class="ln">29</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><b>· Item 2: table grid structure</b><span class="segspan">L31-36 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">31</span><code>q</code></div><div class="srow tx"><span class="ln">32</span><code>BT</code></div><div class="srow tx"><span class="ln">33</span><code>1 0 0 1 66 539 Tm</code></div><div class="srow text"><span class="ln">34</span><code>/helv 10.5 Tf [&lt;b7204974656d20323a207461626c65206772696420737472756374757265&gt;]TJ</code><span class="nt showtext">· Item 2: table grid structure</span></div><div class="srow tx"><span class="ln">35</span><code>ET</code></div><div class="srow st"><span class="ln">36</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><b>· Item 3: image bounding boxes</b><span class="segspan">L38-43 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">38</span><code>q</code></div><div class="srow tx"><span class="ln">39</span><code>BT</code></div><div class="srow tx"><span class="ln">40</span><code>1 0 0 1 66 521 Tm</code></div><div class="srow text"><span class="ln">41</span><code>/helv 10.5 Tf [&lt;b7204974656d20333a20696d61676520626f756e64696e6720626f786573&gt;]TJ</code><span class="nt showtext">· Item 3: image bounding boxes</span></div><div class="srow tx"><span class="ln">42</span><code>ET</code></div><div class="srow st"><span class="ln">43</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><b>· Item 4: form field widgets</b><span class="segspan">L45-50 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">45</span><code>q</code></div><div class="srow tx"><span class="ln">46</span><code>BT</code></div><div class="srow tx"><span class="ln">47</span><code>1 0 0 1 66 503 Tm</code></div><div class="srow text"><span class="ln">48</span><code>/helv 10.5 Tf [&lt;b7204974656d20343a20666f726d206669656c642077696467657473&gt;]TJ</code><span class="nt showtext">· Item 4: form field widgets</span></div><div class="srow tx"><span class="ln">49</span><code>ET</code></div><div class="srow st"><span class="ln">50</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><span class="keybadge">IMG</span><b>图片（img）</b><span class="segspan">L52-55 · 4 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">52</span><code>q</code></div><div class="srow img"><span class="ln">53</span><code>240 0 0 137.1028 60 327.4486 cm</code></div><div class="srow img2"><span class="ln">54</span><code>/fzImg0 Do</code></div><div class="srow st"><span class="ln">55</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><b>空段</b><span class="segspan">L57-62 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">57</span><code>q</code></div><div class="srow tx"><span class="ln">58</span><code>BT</code></div><div class="srow tx"><span class="ln">59</span><code>1 0 0 1 60 302 Tm</code></div><div class="srow "><span class="ln">60</span><code>/helv 9.5 Tf .35 .35 .35 RG .35 .35 .35 rg [&lt;46696775726520312e204120726173746572697a656420636861727420696d616765202873796e746865746963292e&gt;]TJ</code></div><div class="srow tx"><span class="ln">61</span><code>ET</code></div><div class="srow st"><span class="ln">62</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><span class="keybadge">TBL</span><b>表格单元格（draw+txt）</b><span class="segspan">L64-69 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">64</span><code>q</code></div><div class="srow draw"><span class="ln">65</span><code>320 444 85 26 re</code></div><div class="srow draw"><span class="ln">66</span><code>.8 w</code></div><div class="srow draw"><span class="ln">67</span><code>h</code></div><div class="srow "><span class="ln">68</span><code>.45 .45 .45 RG S</code></div><div class="srow st"><span class="ln">69</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><b>Product</b><span class="segspan">L71-76 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">71</span><code>q</code></div><div class="srow tx"><span class="ln">72</span><code>BT</code></div><div class="srow tx"><span class="ln">73</span><code>1 0 0 1 326 453 Tm</code></div><div class="srow text"><span class="ln">74</span><code>/helv 10.5 Tf [&lt;50726f64756374&gt;]TJ</code><span class="nt showtext">Product</span></div><div class="srow tx"><span class="ln">75</span><code>ET</code></div><div class="srow st"><span class="ln">76</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><span class="keybadge">TBL</span><b>表格单元格（draw+txt）</b><span class="segspan">L78-83 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">78</span><code>q</code></div><div class="srow draw"><span class="ln">79</span><code>405 444 45 26 re</code></div><div class="srow draw"><span class="ln">80</span><code>.8 w</code></div><div class="srow draw"><span class="ln">81</span><code>h</code></div><div class="srow "><span class="ln">82</span><code>.45 .45 .45 RG S</code></div><div class="srow st"><span class="ln">83</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><b>Qty</b><span class="segspan">L85-90 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">85</span><code>q</code></div><div class="srow tx"><span class="ln">86</span><code>BT</code></div><div class="srow tx"><span class="ln">87</span><code>1 0 0 1 411 453 Tm</code></div><div class="srow text"><span class="ln">88</span><code>/helv 10.5 Tf [&lt;517479&gt;]TJ</code><span class="nt showtext">Qty</span></div><div class="srow tx"><span class="ln">89</span><code>ET</code></div><div class="srow st"><span class="ln">90</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><span class="keybadge">TBL</span><b>表格单元格（draw+txt）</b><span class="segspan">L92-97 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">92</span><code>q</code></div><div class="srow draw"><span class="ln">93</span><code>450 444 65 26 re</code></div><div class="srow draw"><span class="ln">94</span><code>.8 w</code></div><div class="srow draw"><span class="ln">95</span><code>h</code></div><div class="srow "><span class="ln">96</span><code>.45 .45 .45 RG S</code></div><div class="srow st"><span class="ln">97</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><b>Qty</b><span class="segspan">L99-104 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">99</span><code>q</code></div><div class="srow tx"><span class="ln">100</span><code>BT</code></div><div class="srow tx"><span class="ln">101</span><code>1 0 0 1 456 453 Tm</code></div><div class="srow text"><span class="ln">102</span><code>/helv 10.5 Tf [&lt;556e6974205072696365&gt;]TJ</code><span class="nt showtext">Qty</span></div><div class="srow tx"><span class="ln">103</span><code>ET</code></div><div class="srow st"><span class="ln">104</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><span class="keybadge">TBL</span><b>表格单元格（draw+txt）</b><span class="segspan">L106-111 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">106</span><code>q</code></div><div class="srow draw"><span class="ln">107</span><code>515 444 60 26 re</code></div><div class="srow draw"><span class="ln">108</span><code>.8 w</code></div><div class="srow draw"><span class="ln">109</span><code>h</code></div><div class="srow "><span class="ln">110</span><code>.45 .45 .45 RG S</code></div><div class="srow st"><span class="ln">111</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><b>Subtotal</b><span class="segspan">L113-118 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">113</span><code>q</code></div><div class="srow tx"><span class="ln">114</span><code>BT</code></div><div class="srow tx"><span class="ln">115</span><code>1 0 0 1 521 453 Tm</code></div><div class="srow text"><span class="ln">116</span><code>/helv 10.5 Tf [&lt;537562746f74616c&gt;]TJ</code><span class="nt showtext">Subtotal</span></div><div class="srow tx"><span class="ln">117</span><code>ET</code></div><div class="srow st"><span class="ln">118</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><span class="keybadge">TBL</span><b>表格单元格（draw+txt）</b><span class="segspan">L120-125 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">120</span><code>q</code></div><div class="srow draw"><span class="ln">121</span><code>320 418 85 26 re</code></div><div class="srow draw"><span class="ln">122</span><code>.8 w</code></div><div class="srow draw"><span class="ln">123</span><code>h</code></div><div class="srow "><span class="ln">124</span><code>.45 .45 .45 RG S</code></div><div class="srow st"><span class="ln">125</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><b>Desk Lamp</b><span class="segspan">L127-132 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">127</span><code>q</code></div><div class="srow tx"><span class="ln">128</span><code>BT</code></div><div class="srow tx"><span class="ln">129</span><code>1 0 0 1 326 427 Tm</code></div><div class="srow text"><span class="ln">130</span><code>/helv 10.5 Tf [&lt;4465736b204c616d70&gt;]TJ</code><span class="nt showtext">Desk Lamp</span></div><div class="srow tx"><span class="ln">131</span><code>ET</code></div><div class="srow st"><span class="ln">132</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><span class="keybadge">TBL</span><b>表格单元格（draw+txt）</b><span class="segspan">L134-139 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">134</span><code>q</code></div><div class="srow draw"><span class="ln">135</span><code>405 418 45 26 re</code></div><div class="srow draw"><span class="ln">136</span><code>.8 w</code></div><div class="srow draw"><span class="ln">137</span><code>h</code></div><div class="srow "><span class="ln">138</span><code>.45 .45 .45 RG S</code></div><div class="srow st"><span class="ln">139</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><b>12</b><span class="segspan">L141-146 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">141</span><code>q</code></div><div class="srow tx"><span class="ln">142</span><code>BT</code></div><div class="srow tx"><span class="ln">143</span><code>1 0 0 1 411 427 Tm</code></div><div class="srow text"><span class="ln">144</span><code>/helv 10.5 Tf [&lt;3132&gt;]TJ</code><span class="nt showtext">12</span></div><div class="srow tx"><span class="ln">145</span><code>ET</code></div><div class="srow st"><span class="ln">146</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><span class="keybadge">TBL</span><b>表格单元格（draw+txt）</b><span class="segspan">L148-153 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">148</span><code>q</code></div><div class="srow draw"><span class="ln">149</span><code>450 418 65 26 re</code></div><div class="srow draw"><span class="ln">150</span><code>.8 w</code></div><div class="srow draw"><span class="ln">151</span><code>h</code></div><div class="srow "><span class="ln">152</span><code>.45 .45 .45 RG S</code></div><div class="srow st"><span class="ln">153</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><b>12</b><span class="segspan">L155-160 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">155</span><code>q</code></div><div class="srow tx"><span class="ln">156</span><code>BT</code></div><div class="srow tx"><span class="ln">157</span><code>1 0 0 1 456 427 Tm</code></div><div class="srow text"><span class="ln">158</span><code>/helv 10.5 Tf [&lt;2431382e3530&gt;]TJ</code><span class="nt showtext">12</span></div><div class="srow tx"><span class="ln">159</span><code>ET</code></div><div class="srow st"><span class="ln">160</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><span class="keybadge">TBL</span><b>表格单元格（draw+txt）</b><span class="segspan">L162-167 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">162</span><code>q</code></div><div class="srow draw"><span class="ln">163</span><code>515 418 60 26 re</code></div><div class="srow draw"><span class="ln">164</span><code>.8 w</code></div><div class="srow draw"><span class="ln">165</span><code>h</code></div><div class="srow "><span class="ln">166</span><code>.45 .45 .45 RG S</code></div><div class="srow st"><span class="ln">167</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><b>$222.00</b><span class="segspan">L169-174 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">169</span><code>q</code></div><div class="srow tx"><span class="ln">170</span><code>BT</code></div><div class="srow tx"><span class="ln">171</span><code>1 0 0 1 521 427 Tm</code></div><div class="srow text"><span class="ln">172</span><code>/helv 10.5 Tf [&lt;243232322e3030&gt;]TJ</code><span class="nt showtext">$222.00</span></div><div class="srow tx"><span class="ln">173</span><code>ET</code></div><div class="srow st"><span class="ln">174</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><span class="keybadge">TBL</span><b>表格单元格（draw+txt）</b><span class="segspan">L176-181 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">176</span><code>q</code></div><div class="srow draw"><span class="ln">177</span><code>320 392 85 26 re</code></div><div class="srow draw"><span class="ln">178</span><code>.8 w</code></div><div class="srow draw"><span class="ln">179</span><code>h</code></div><div class="srow "><span class="ln">180</span><code>.45 .45 .45 RG S</code></div><div class="srow st"><span class="ln">181</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><b>Floor Lamp</b><span class="segspan">L183-188 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">183</span><code>q</code></div><div class="srow tx"><span class="ln">184</span><code>BT</code></div><div class="srow tx"><span class="ln">185</span><code>1 0 0 1 326 401 Tm</code></div><div class="srow text"><span class="ln">186</span><code>/helv 10.5 Tf [&lt;466c6f6f72204c616d70&gt;]TJ</code><span class="nt showtext">Floor Lamp</span></div><div class="srow tx"><span class="ln">187</span><code>ET</code></div><div class="srow st"><span class="ln">188</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><span class="keybadge">TBL</span><b>表格单元格（draw+txt）</b><span class="segspan">L190-195 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">190</span><code>q</code></div><div class="srow draw"><span class="ln">191</span><code>405 392 45 26 re</code></div><div class="srow draw"><span class="ln">192</span><code>.8 w</code></div><div class="srow draw"><span class="ln">193</span><code>h</code></div><div class="srow "><span class="ln">194</span><code>.45 .45 .45 RG S</code></div><div class="srow st"><span class="ln">195</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><b>5</b><span class="segspan">L197-202 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">197</span><code>q</code></div><div class="srow tx"><span class="ln">198</span><code>BT</code></div><div class="srow tx"><span class="ln">199</span><code>1 0 0 1 411 401 Tm</code></div><div class="srow text"><span class="ln">200</span><code>/helv 10.5 Tf [&lt;35&gt;]TJ</code><span class="nt showtext">5</span></div><div class="srow tx"><span class="ln">201</span><code>ET</code></div><div class="srow st"><span class="ln">202</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><span class="keybadge">TBL</span><b>表格单元格（draw+txt）</b><span class="segspan">L204-209 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">204</span><code>q</code></div><div class="srow draw"><span class="ln">205</span><code>450 392 65 26 re</code></div><div class="srow draw"><span class="ln">206</span><code>.8 w</code></div><div class="srow draw"><span class="ln">207</span><code>h</code></div><div class="srow "><span class="ln">208</span><code>.45 .45 .45 RG S</code></div><div class="srow st"><span class="ln">209</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><b>5</b><span class="segspan">L211-216 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">211</span><code>q</code></div><div class="srow tx"><span class="ln">212</span><code>BT</code></div><div class="srow tx"><span class="ln">213</span><code>1 0 0 1 456 401 Tm</code></div><div class="srow text"><span class="ln">214</span><code>/helv 10.5 Tf [&lt;2435392e3030&gt;]TJ</code><span class="nt showtext">5</span></div><div class="srow tx"><span class="ln">215</span><code>ET</code></div><div class="srow st"><span class="ln">216</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><span class="keybadge">TBL</span><b>表格单元格（draw+txt）</b><span class="segspan">L218-223 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">218</span><code>q</code></div><div class="srow draw"><span class="ln">219</span><code>515 392 60 26 re</code></div><div class="srow draw"><span class="ln">220</span><code>.8 w</code></div><div class="srow draw"><span class="ln">221</span><code>h</code></div><div class="srow "><span class="ln">222</span><code>.45 .45 .45 RG S</code></div><div class="srow st"><span class="ln">223</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><b>$295.00</b><span class="segspan">L225-230 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">225</span><code>q</code></div><div class="srow tx"><span class="ln">226</span><code>BT</code></div><div class="srow tx"><span class="ln">227</span><code>1 0 0 1 521 401 Tm</code></div><div class="srow text"><span class="ln">228</span><code>/helv 10.5 Tf [&lt;243239352e3030&gt;]TJ</code><span class="nt showtext">$295.00</span></div><div class="srow tx"><span class="ln">229</span><code>ET</code></div><div class="srow st"><span class="ln">230</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><span class="keybadge">TBL</span><b>表格单元格（draw+txt）</b><span class="segspan">L232-237 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">232</span><code>q</code></div><div class="srow draw"><span class="ln">233</span><code>320 366 85 26 re</code></div><div class="srow draw"><span class="ln">234</span><code>.8 w</code></div><div class="srow draw"><span class="ln">235</span><code>h</code></div><div class="srow "><span class="ln">236</span><code>.45 .45 .45 RG S</code></div><div class="srow st"><span class="ln">237</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><b>Wall Sconce</b><span class="segspan">L239-244 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">239</span><code>q</code></div><div class="srow tx"><span class="ln">240</span><code>BT</code></div><div class="srow tx"><span class="ln">241</span><code>1 0 0 1 326 375 Tm</code></div><div class="srow text"><span class="ln">242</span><code>/helv 10.5 Tf [&lt;57616c6c2053636f6e6365&gt;]TJ</code><span class="nt showtext">Wall Sconce</span></div><div class="srow tx"><span class="ln">243</span><code>ET</code></div><div class="srow st"><span class="ln">244</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><span class="keybadge">TBL</span><b>表格单元格（draw+txt）</b><span class="segspan">L246-251 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">246</span><code>q</code></div><div class="srow draw"><span class="ln">247</span><code>405 366 45 26 re</code></div><div class="srow draw"><span class="ln">248</span><code>.8 w</code></div><div class="srow draw"><span class="ln">249</span><code>h</code></div><div class="srow "><span class="ln">250</span><code>.45 .45 .45 RG S</code></div><div class="srow st"><span class="ln">251</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><b>8</b><span class="segspan">L253-258 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">253</span><code>q</code></div><div class="srow tx"><span class="ln">254</span><code>BT</code></div><div class="srow tx"><span class="ln">255</span><code>1 0 0 1 411 375 Tm</code></div><div class="srow text"><span class="ln">256</span><code>/helv 10.5 Tf [&lt;38&gt;]TJ</code><span class="nt showtext">8</span></div><div class="srow tx"><span class="ln">257</span><code>ET</code></div><div class="srow st"><span class="ln">258</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><span class="keybadge">TBL</span><b>表格单元格（draw+txt）</b><span class="segspan">L260-265 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">260</span><code>q</code></div><div class="srow draw"><span class="ln">261</span><code>450 366 65 26 re</code></div><div class="srow draw"><span class="ln">262</span><code>.8 w</code></div><div class="srow draw"><span class="ln">263</span><code>h</code></div><div class="srow "><span class="ln">264</span><code>.45 .45 .45 RG S</code></div><div class="srow st"><span class="ln">265</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><b>8</b><span class="segspan">L267-272 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">267</span><code>q</code></div><div class="srow tx"><span class="ln">268</span><code>BT</code></div><div class="srow tx"><span class="ln">269</span><code>1 0 0 1 456 375 Tm</code></div><div class="srow text"><span class="ln">270</span><code>/helv 10.5 Tf [&lt;2432392e3735&gt;]TJ</code><span class="nt showtext">8</span></div><div class="srow tx"><span class="ln">271</span><code>ET</code></div><div class="srow st"><span class="ln">272</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><span class="keybadge">TBL</span><b>表格单元格（draw+txt）</b><span class="segspan">L274-279 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">274</span><code>q</code></div><div class="srow draw"><span class="ln">275</span><code>515 366 60 26 re</code></div><div class="srow draw"><span class="ln">276</span><code>.8 w</code></div><div class="srow draw"><span class="ln">277</span><code>h</code></div><div class="srow "><span class="ln">278</span><code>.45 .45 .45 RG S</code></div><div class="srow st"><span class="ln">279</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><b>$238.00</b><span class="segspan">L281-286 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">281</span><code>q</code></div><div class="srow tx"><span class="ln">282</span><code>BT</code></div><div class="srow tx"><span class="ln">283</span><code>1 0 0 1 521 375 Tm</code></div><div class="srow text"><span class="ln">284</span><code>/helv 10.5 Tf [&lt;243233382e3030&gt;]TJ</code><span class="nt showtext">$238.00</span></div><div class="srow tx"><span class="ln">285</span><code>ET</code></div><div class="srow st"><span class="ln">286</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><span class="keybadge">TBL</span><b>表格单元格（draw+txt）</b><span class="segspan">L288-293 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">288</span><code>q</code></div><div class="srow draw"><span class="ln">289</span><code>320 340 85 26 re</code></div><div class="srow draw"><span class="ln">290</span><code>.8 w</code></div><div class="srow draw"><span class="ln">291</span><code>h</code></div><div class="srow "><span class="ln">292</span><code>.45 .45 .45 RG S</code></div><div class="srow st"><span class="ln">293</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><b>Total</b><span class="segspan">L295-300 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">295</span><code>q</code></div><div class="srow tx"><span class="ln">296</span><code>BT</code></div><div class="srow tx"><span class="ln">297</span><code>1 0 0 1 326 349 Tm</code></div><div class="srow text"><span class="ln">298</span><code>/helv 10.5 Tf [&lt;546f74616c&gt;]TJ</code><span class="nt showtext">Total</span></div><div class="srow tx"><span class="ln">299</span><code>ET</code></div><div class="srow st"><span class="ln">300</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><span class="keybadge">TBL</span><b>表格单元格（draw+txt）</b><span class="segspan">L302-307 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">302</span><code>q</code></div><div class="srow draw"><span class="ln">303</span><code>405 340 45 26 re</code></div><div class="srow draw"><span class="ln">304</span><code>.8 w</code></div><div class="srow draw"><span class="ln">305</span><code>h</code></div><div class="srow "><span class="ln">306</span><code>.45 .45 .45 RG S</code></div><div class="srow st"><span class="ln">307</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><b>25</b><span class="segspan">L309-314 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">309</span><code>q</code></div><div class="srow tx"><span class="ln">310</span><code>BT</code></div><div class="srow tx"><span class="ln">311</span><code>1 0 0 1 411 349 Tm</code></div><div class="srow text"><span class="ln">312</span><code>/helv 10.5 Tf [&lt;3235&gt;]TJ</code><span class="nt showtext">25</span></div><div class="srow tx"><span class="ln">313</span><code>ET</code></div><div class="srow st"><span class="ln">314</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><span class="keybadge">TBL</span><b>表格单元格（draw+txt）</b><span class="segspan">L316-321 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">316</span><code>q</code></div><div class="srow draw"><span class="ln">317</span><code>450 340 65 26 re</code></div><div class="srow draw"><span class="ln">318</span><code>.8 w</code></div><div class="srow draw"><span class="ln">319</span><code>h</code></div><div class="srow "><span class="ln">320</span><code>.45 .45 .45 RG S</code></div><div class="srow st"><span class="ln">321</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><b>25</b><span class="segspan">L323-328 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">323</span><code>q</code></div><div class="srow tx"><span class="ln">324</span><code>BT</code></div><div class="srow tx"><span class="ln">325</span><code>1 0 0 1 456 349 Tm</code></div><div class="srow text"><span class="ln">326</span><code>/helv 10.5 Tf [&lt;2d&gt;]TJ</code><span class="nt showtext">25</span></div><div class="srow tx"><span class="ln">327</span><code>ET</code></div><div class="srow st"><span class="ln">328</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><span class="keybadge">TBL</span><b>表格单元格（draw+txt）</b><span class="segspan">L330-335 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">330</span><code>q</code></div><div class="srow draw"><span class="ln">331</span><code>515 340 60 26 re</code></div><div class="srow draw"><span class="ln">332</span><code>.8 w</code></div><div class="srow draw"><span class="ln">333</span><code>h</code></div><div class="srow "><span class="ln">334</span><code>.45 .45 .45 RG S</code></div><div class="srow st"><span class="ln">335</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><b>$755.00</b><span class="segspan">L337-342 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">337</span><code>q</code></div><div class="srow tx"><span class="ln">338</span><code>BT</code></div><div class="srow tx"><span class="ln">339</span><code>1 0 0 1 521 349 Tm</code></div><div class="srow text"><span class="ln">340</span><code>/helv 10.5 Tf [&lt;243735352e3030&gt;]TJ</code><span class="nt showtext">$755.00</span></div><div class="srow tx"><span class="ln">341</span><code>ET</code></div><div class="srow st"><span class="ln">342</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><b>空段</b><span class="segspan">L344-349 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">344</span><code>q</code></div><div class="srow tx"><span class="ln">345</span><code>BT</code></div><div class="srow tx"><span class="ln">346</span><code>1 0 0 1 330 297 Tm</code></div><div class="srow "><span class="ln">347</span><code>/helv 9.5 Tf .35 .35 .35 RG .35 .35 .35 rg [&lt;5461626c6520312e20517561727465726c792073616c65732e&gt;]TJ</code></div><div class="srow tx"><span class="ln">348</span><code>ET</code></div><div class="srow st"><span class="ln">349</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><span class="keybadge">FORM</span><b>表单标签（txt，控件在别处）</b><span class="segspan">L351-356 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">351</span><code>q</code></div><div class="srow tx"><span class="ln">352</span><code>BT</code></div><div class="srow tx"><span class="ln">353</span><code>1 0 0 1 60 252 Tm</code></div><div class="srow text"><span class="ln">354</span><code>/helv 14 Tf [&lt;53656374696f6e20322e2046696c6c61626c6520666f726d&gt;]TJ</code><span class="nt showtext">Section 2. Fillable form</span></div><div class="srow tx"><span class="ln">355</span><code>ET</code></div><div class="srow st"><span class="ln">356</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><span class="keybadge">FORM</span><b>表单标签（txt，控件在别处）</b><span class="segspan">L358-363 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">358</span><code>q</code></div><div class="srow tx"><span class="ln">359</span><code>BT</code></div><div class="srow tx"><span class="ln">360</span><code>1 0 0 1 70 228 Tm</code></div><div class="srow text"><span class="ln">361</span><code>/helv 10.5 Tf [&lt;4e616d653a&gt;]TJ</code><span class="nt showtext">Name:</span></div><div class="srow tx"><span class="ln">362</span><code>ET</code></div><div class="srow st"><span class="ln">363</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><span class="keybadge">FORM</span><b>表单标签（txt，控件在别处）</b><span class="segspan">L365-370 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">365</span><code>q</code></div><div class="srow tx"><span class="ln">366</span><code>BT</code></div><div class="srow tx"><span class="ln">367</span><code>1 0 0 1 70 186 Tm</code></div><div class="srow text"><span class="ln">368</span><code>/helv 10.5 Tf [&lt;456d61696c3a&gt;]TJ</code><span class="nt showtext">Email:</span></div><div class="srow tx"><span class="ln">369</span><code>ET</code></div><div class="srow st"><span class="ln">370</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><span class="keybadge">FORM</span><b>表单标签（txt，控件在别处）</b><span class="segspan">L372-377 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">372</span><code>q</code></div><div class="srow tx"><span class="ln">373</span><code>BT</code></div><div class="srow tx"><span class="ln">374</span><code>1 0 0 1 70 144 Tm</code></div><div class="srow text"><span class="ln">375</span><code>/helv 10.5 Tf [&lt;446174653a&gt;]TJ</code><span class="nt showtext">Date:</span></div><div class="srow tx"><span class="ln">376</span><code>ET</code></div><div class="srow st"><span class="ln">377</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><span class="keybadge">FORM</span><b>表单标签（txt，控件在别处）</b><span class="segspan">L379-384 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">379</span><code>q</code></div><div class="srow tx"><span class="ln">380</span><code>BT</code></div><div class="srow tx"><span class="ln">381</span><code>1 0 0 1 92 80 Tm</code></div><div class="srow text"><span class="ln">382</span><code>/helv 10.5 Tf [&lt;53756273637269626520746f206e6577736c6574746572&gt;]TJ</code><span class="nt showtext">Subscribe to newsletter</span></div><div class="srow tx"><span class="ln">383</span><code>ET</code></div><div class="srow st"><span class="ln">384</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><span class="keybadge">FORM</span><b>表单标签（txt，控件在别处）</b><span class="segspan">L386-391 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">386</span><code>q</code></div><div class="srow tx"><span class="ln">387</span><code>BT</code></div><div class="srow tx"><span class="ln">388</span><code>1 0 0 1 92 54 Tm</code></div><div class="srow text"><span class="ln">389</span><code>/helv 10.5 Tf [&lt;416772656520746f20626520636f6e74616374656420666f72207265736561726368&gt;]TJ</code><span class="nt showtext">Agree to be contacted for research</span></div><div class="srow tx"><span class="ln">390</span><code>ET</code></div><div class="srow st"><span class="ln">391</span><code>Q</code></div></div>
+</div>
+
+<div class="seg">
+  <div class="segh"><span class="keybadge">FORM</span><b>表单标签（txt，控件在别处）</b><span class="segspan">L393-398 · 6 行</span></div>
+  <div class="segbody"><div class="srow st"><span class="ln">393</span><code>q</code></div><div class="srow tx"><span class="ln">394</span><code>BT</code></div><div class="srow tx"><span class="ln">395</span><code>1 0 0 1 70 28 Tm</code></div><div class="srow text"><span class="ln">396</span><code>/helv 10.5 Tf [&lt;436974793a&gt;]TJ</code><span class="nt showtext">City:</span></div><div class="srow tx"><span class="ln">397</span><code>ET</code></div><div class="srow st"><span class="ln">398</span><code>Q</code></div></div>
+</div></div>
+
+<h2>3. 六个重点：每一种元素如何"存在"、又如何被解析</h2>
+<div class="card keycard"><h3>重点 1 · 标题：一行文本的完整生命周期</h3><b>第 3-6 行</b>：`BT` 开块 → `Tm` 挪到 (60,772) → `/helv 19 Tf` 设字体 → `[&lt;hex&gt;]TJ` 写字 → `ET` 关块。<br>这就是 <b>PDF 里“一段文字”的全部</b>。三个库看到的是同一串指令：PyMuPDF 忠实还原（还带上 y=772 的坐标），Unstructured 发现它“很短、没有句号、字号 19pt 比别的都大” → 猜它是 <b>Title</b>；LlamaParse 则把整页视为图像，让大模型「认」出这是个 <b>标题</b>（顺便理解语义：这是一份文档的题目）。</div>
+<div class="card keycard"><h3>重点 2 · TJ 里的负数：字符间距（kerning）</h3>`[&lt;B&gt;-50(...)...]TJ` 中的 `-50` 是字间距微调（单位=1/1000 字号），负值让字母「贴」在一起。<b>这说明 P 与 F 的间距并不相等</b>——所以“逐字符坐标”必须跟着 TJ 里的补偿数字算，这正是 PyMuPDF `get_text("words")` 里每个词都有独立 bbox 的原因。</div>
+<div class="card keycard"><h3>重点 3 · 中文为什么是 &amp;lt;hex&amp;gt; 串</h3>`&lt;20bc38163e4456...&gt;` 是紧凑的十六进制字符串，每个字符 2 字节。这里的字节<b>不是 Unicode</b>，而是<b>字体内的字形编号（GID）</b>：Arial Unicode 被「子集化」后嵌入（字体名带随机前缀），再靠字体里的 <b>ToUnicode CMap</b> 把 GID 映射回汉字。映射错了提取就乱码——本仓库生成样例时就踩过：PingFang.ttc 子集化后「落」字被映射成兼容字符 U+F934。</div>
+<div class="card keycard"><h3>重点 4 · 图片：cm + Do 就是全部</h3>第 53-54 行：`240 0 0 137.1028 60 327.4486 cm` + `/fzImg0 Do`。之前 398 行的“程序”里，图片占 2 行。<b>像素数据</b>在 /Resources 的图像对象中（本页是 856×489 的 JPEG，`/Filter /DCTDecode`）。PyMuPDF 按 xref 解码成像素（能存出原始分辨率 PNG）；Unstructured fast 对图片<b>毫无感知</b>；LlamaParse 渲染整页后视觉识别图片内容（能读懂图「画了什么」）。</div>
+<div class="card keycard"><h3>重点 5 · 表格：20 个灰色矩形 + 文字（PDF 里没有“表”）</h3>每个单元格都是 6 行固定套路：`re`（矩形框）+ `.8 w`（线宽）+ `h`（闭合）+ `.45 .45 .45 RG S`（描边灰线）然后一段文字。整张表 = <b>20 个矩形 + 20 条文本</b>，没有“表格对象”。所以：PyMuPDF 用几何法（find_tables 求线段交点）还原 5×4 行列；Unstructured fast 把 20 个格子的文字当成 20 个独立元素（还错把 Product 判成 Title）；LlamaParse 靠视觉模型认出「这是一张表」并重建单元格关系。</div>
+<div class="card keycard"><h3>重点 6 · 表单：控件根本不在内容流里</h3>表单区的内容流里只有标签文字（Name: / Email: / …）。真正能输入的控件是挂在页对象 `/Annots` 数组上的 <b>Widget 注释</b>：`/FT /Tx`（文本）、`/T (applicant_name)`（字段名）、`/V (Ada Lovelace)`（值）、`/DA`（样式）。所以只有读取注释树的库（PyMuPDF）才能「看到」控件并填写；Unstructured/LlamaParse 只是把表单文字结构化。本页 6 个控件：applicant_name / applicant_email / applicant_date / newsletter / survey_ok / city。</div>
+
+<h2>4. 三个库逐元素实测对比（同一份 PDF）</h2>
+
+<h3>4.1 PyMuPDF —— 忠实还原物理层</h3>
+<div class="two">
+<div class="card">
+<h3>文本块（带坐标）</h3>
+<div><code>(60.0, 49.6, 489.8, 75.7)</code>  A Sample Document: Text, Image, Table and Form<br><code>(60.0, 83.7, 596.9, 98.1)</code>  This PDF is generated by scripts/make_sample_p<br><code>(60.0, 200.0, 480.0, 244.1)</code>  中文段落：在实际项目中，PDF 可能同时包含多种语言的正文。例如产品说明书或招标文件通常使用<br><code>(66.0, 273.7, 244.0, 288.1)</code>  · Item 1: coordinates of each text span<br><code>(66.0, 291.7, 193.8, 306.1)</code>  · Item 2: table grid structure<br><code>(66.0, 309.7, 212.5, 324.1)</code>  · Item 3: image bounding boxes<br><code>(66.0, 327.7, 188.5, 342.1)</code>  · Item 4: form field widgets<br><code>(60.0, 529.8, 252.2, 542.8)</code>  Figure 1. A rasterized chart image (synthetic)<br><code>(326.0, 377.7, 559.5, 392.1)</code>  Product Qty Unit Price Subtotal<br><code>(326.0, 403.7, 558.9, 418.1)</code>  Desk Lamp 12 $18.50 $222.00<br><code>(326.0, 429.7, 558.9, 444.1)</code>  Floor Lamp 5 $59.00 $295.00<br><code>(326.0, 455.7, 558.9, 470.1)</code>  Wall Sconce 8 $29.75 $238.00<br><code>(326.0, 481.7, 558.9, 496.1)</code>  Total 25 - $755.00<br><code>(330.0, 534.8, 433.5, 547.8)</code>  Table 1. Quarterly sales.<br><code>(60.0, 575.0, 202.4, 594.2)</code>  Section 2. Fillable form<br><code>(70.0, 602.7, 100.9, 617.1)</code>  Name:<br><code>(70.0, 644.7, 99.2, 659.1)</code>  Email:<br><code>(70.0, 686.7, 95.1, 701.1)</code>  Date:<br><code>(92.0, 750.7, 201.1, 765.1)</code>  Subscribe to newsletter<br><code>(92.0, 776.7, 253.7, 791.1)</code>  Agree to be contacted for research<br><code>(70.0, 802.7, 91.0, 817.1)</code>  City:<br><code>(70.0, 613.9, 203.3, 644.2)</code>  Ada Lovelace<br><code>(70.0, 655.9, 259.8, 686.2)</code>  ada@example.com<br><code>(70.0, 697.9, 182.5, 728.2)</code>  2026-08-01<br><code>(71.6, 749.2, 83.7, 765.2)</code>  3<br><code>(70.0, 813.9, 136.0, 844.2)</code>  Beijing</div>
+<p class="muted">注意：PyMuPDF 用 y 轴<b>向下</b>的坐标，内容流是 y 轴<b>向上</b>（842-y）。</p>
+<h3>词级坐标（前 6 个词）</h3>
+<div><code>(60.0, 49.6, 72.7, 75.7)</code>  <b>A</b><br><code>(78.0, 49.6, 142.4, 75.7)</code>  <b>Sample</b><br><code>(147.6, 49.6, 239.5, 75.7)</code>  <b>Document:</b><br><code>(244.8, 49.6, 287.0, 75.7)</code>  <b>Text,</b><br><code>(292.3, 49.6, 350.4, 75.7)</code>  <b>Image,</b><br><code>(355.7, 49.6, 403.2, 75.7)</code>  <b>Table</b></div>
+</div>
+<div class="card">
+<h3>图片</h3>
+<p>856×489 像素 · 显示位置 <code>(60, 330.6)-(300, 467.7)</code>pt<br>
+PyMuPDF 能把它解码回原始像素 PNG。<b>它永远不知道图"画了什么"</b>。</p>
+<h3>表格（find_tables 还原行列）</h3>
+<div>Product | Qty | Unit Price | Subtotal<br>Desk Lamp | 12 | $18.50 | $222.00<br>Floor Lamp | 5 | $59.00 | $295.00<br>Wall Sconce | 8 | $29.75 | $238.00<br>Total | 25 | - | $755.00</div>
+<h3>表单控件（读取 Widget 注释）</h3>
+<div><b>applicant_name</b> — Text，值='Ada Lovelace'，<code>[70.0, 620.0, 300.0, 642.0]</code><br><b>applicant_email</b> — Text，值='ada@example.com'，<code>[70.0, 662.0, 300.0, 684.0]</code><br><b>applicant_date</b> — Text，值='2026-08-01'，<code>[70.0, 704.0, 300.0, 726.0]</code><br><b>newsletter</b> — CheckBox，值='Yes'，<code>[70.0, 750.0, 86.0, 766.0]</code><br><b>survey_ok</b> — CheckBox，值='Off'，<code>[70.0, 776.0, 86.0, 792.0]</code><br><b>city</b> — ComboBox，值='Beijing'，<code>[70.0, 820.0, 300.0, 842.0]</code></div>
+<p class="muted">这就是"能填表"的原因：直接改对象 /V 值 + 重生成外观流。</p>
+</div>
+</div>
+
+<h3>4.2 Unstructured fast —— 版面分组 + 规则分类（36 个元素）</h3>
+<div class="card">
+<div><span class="cat c-title">Title</span> A Sample Document: Text, Image, Table and Form<br><span class="cat c-nar">NarrativeText</span> This PDF is generated by scripts/make_sample_pdfs.py to de<br><span class="cat c-uncat">UncategorizedText</span> 中文段落：在实际项目中，PDF 可能同时包含多种语言的正文。例如产品说明书或招标文件通常使用混合语言排版，提取时 需<br><span class="cat c-list">ListItem</span> Item 1: coordinates of each text span<br><span class="cat c-list">ListItem</span> Item 2: table grid structure<br><span class="cat c-list">ListItem</span> Item 3: image bounding boxes<br><span class="cat c-list">ListItem</span> Item 4: form field widgets<br><span class="cat c-title">Title</span> Product<br><span class="cat c-title">Title</span> Qty<br><span class="cat c-title">Title</span> Unit Price<br><span class="cat c-title">Title</span> Subtotal<br><span class="cat c-title">Title</span> Desk Lamp<br><span class="cat c-uncat">UncategorizedText</span> 12<br><span class="cat c-uncat">UncategorizedText</span> $18.50<br><span class="cat c-uncat">UncategorizedText</span> $222.00<br><span class="cat c-title">Title</span> Floor Lamp<br><span class="cat c-uncat">UncategorizedText</span> 5<br><span class="cat c-uncat">UncategorizedText</span> $59.00<br><span class="cat c-uncat">UncategorizedText</span> $295.00<br><span class="cat c-title">Title</span> Wall Sconce<br><span class="cat c-uncat">UncategorizedText</span> 8<br><span class="cat c-uncat">UncategorizedText</span> $29.75<br><span class="cat c-uncat">UncategorizedText</span> $238.00<br><span class="cat c-title">Title</span> Total<br><span class="cat c-uncat">UncategorizedText</span> 25<br><span class="cat c-list">ListItem</span> <br><span class="cat c-uncat">UncategorizedText</span> $755.00<br><span class="cat c-title">Title</span> Figure 1. A rasterized chart image (synthetic).<br><span class="cat c-title">Title</span> Table 1. Quarterly sales.<br><span class="cat c-title">Title</span> Section 2. Fillable form<br><span class="cat c-title">Title</span> Name:<br><span class="cat c-title">Title</span> Email:<br><span class="cat c-title">Title</span> Date:<br><span class="cat c-nar">NarrativeText</span> Subscribe to newsletter<br><span class="cat c-footer">Footer</span> Agree to be contacted for research<br><span class="cat c-footer">Footer</span> City:</div>
+<br><p class="muted">✅ 4 个列表项被正确识别为 <span class="cat c-list">ListItem</span>；标题、正文、题注已分类。<br>
+⚠️ <b>表格</b>：20 个表格字串成了 20 个独立元素（Product 被猜成 Title，- 被猜成 ListItem）——fast 策略<b>不产出 Table 元素</b>；<br>
+⚠️ <b>图片</b>：只字未提（只有题注 Figure 1 成为 Title）；<br>
+⚠️ <b>表单</b>：Name:/Email: 被分类成 Title，City: 因页面位置被误判成 Footer。<br>
+这就是"语义分组"的边界：它靠<b>规则猜</b>，猜不出的（表格/图片）就只能退化成文本。</p>
+</div>
+
+<h3>4.3 LlamaParse —— 云端"读一遍"（需 API Key，此处为预期输出示意）</h3>
+<div class="card">
+<pre># A Sample Document: Text, Image, Table and Form
+
+This PDF is generated by scripts/make_sample_pdfs.py to demonstrate extracting four kinds of elements...
+
+## 中文段落：在实际项目中...
+
+- Item 1: coordinates of each text span
+- Item 2: table grid structure
+- Item 3: image bounding boxes
+- Item 4: form field widgets
+
+![Figure 1](image_asset_1.jpg)
+
+| Product     | Qty | Unit Price | Subtotal |
+|-------------|-----|------------|----------|
+| Desk Lamp   | 12  | $18.50     | $222.00  |
+| Floor Lamp  | 5   | $59.00     | $295.00  |
+| Total       | 25  | -          | $755.00  |
+
+## Section 2. Fillable form
+- Name: Ada Lovelace
+- Email: ada@example.com ...</pre>
+<p class="muted">↑ 只是示意。真实调用：<code>LlamaParse(api_key=…, result_type="markdown")</code> → <code>get_json_result()</code>。
+它把整页<b>渲染成图</b>再交给版面模型 + 大模型：<br>
+✅ 标题层级（# 标题）✅ 列表 ✅ <b>表格被重建为 Markdown 表（单元格关系恢复了！）</b> ✅ 图片引用 <code>![Figure 1]</code> ✅ 表单文字也结构化<br>
+⚠️ 代价：需要 key/网络/费用；<b>没有坐标、没有控件</b>——它关心"文档在说什么"，不关心"它物理上在哪"。</p>
+</div>
+
+<h2>5. 结论：同一个 PDF，三层眼睛</h2>
+<div class="card">
+<table>
+<tr><th>元素</th><th>PDF 物理形态</th><th>PyMuPDF</th><th>Unstructured</th><th>LlamaParse</th></tr>
+<tr><td>文字</td><td>Tj/TJ 指令 + 字体</td><td>✅ 原文+坐标+字体</td><td>✅ Title/正文/列表</td><td>✅ 篇章结构</td></tr>
+<tr><td>图片</td><td>cm+Do → XObject</td><td>✅ 像素原图+位置</td><td>❌ fast 无感知</td><td>✅ 识别图内容</td></tr>
+<tr><td>表格</td><td>矩形+文字的<b>堆叠</b></td><td>✅ 几何法行列</td><td>❌ 退化成文本</td><td>✅ 重建单元格</td></tr>
+<tr><td>列表</td><td>普通文本（• 即字符）</td><td>❌ 只是行</td><td>✅ ListItem</td><td>✅ 列表语法</td></tr>
+<tr><td>表单</td><td>Annots 的 Widget 对象</td><td>✅ 字段+值+可填写</td><td>❌ 只有标签文字</td><td>❌ 只有语义文字</td></tr>
+</table>
+<p class="muted">复现：<code>.venv/bin/python scripts/make_sample_pdfs.py</code> →
+<code>.venv/bin/python examples/pymupdf/06_mixed_all.py</code> →
+<code>.venv/bin/python examples/unstructured/06_mixed_all.py</code> →
+<code>export LLAMA_CLOUD_API_KEY=… &amp;&amp; .venv/bin/python examples/llamaparse/06_mixed_all.py</code></p>
+</div>
+
+</main>
+</body></html>

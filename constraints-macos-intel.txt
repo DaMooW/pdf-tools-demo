@@ -1,0 +1,3 @@
+# Intel Mac 专用约束（与 requirements-macos-intel.txt 一并使用）
+# cryptography 42.0.8 是最后提供 macOS 14 x86_64 wheel 的版本
+cryptography<43

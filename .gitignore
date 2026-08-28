@@ -1,0 +1,18 @@
+# 运行产物（脚本运行后生成）
+outputs/
+
+# 虚拟环境
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/

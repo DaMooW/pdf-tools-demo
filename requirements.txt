@@ -1,0 +1,7 @@
+# 依赖（主流平台：Apple Silicon / Linux / Windows）
+# 如果你的机器是 Intel Mac（macOS x86_64），请改用 requirements-macos-intel.txt，
+# 详见 README「Intel Mac 说明」。
+
+pymupdf>=1.24                          # 快速提取文字/图片/坐标/表格/表单控件
+unstructured[pdf]>=0.16                # 结构化元素（标题/正文/列表/表格）
+llama-parse>=0.6                       # 云端结构化解析（需 API Key + 网络）

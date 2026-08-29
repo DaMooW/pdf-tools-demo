@@ -373,6 +373,7 @@ CSS = """
 body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;color:var(--ink);background:var(--bg);line-height:1.7}
 header{background:linear-gradient(120deg,#0f172a,#1e3a8a);color:#fff;padding:30px 36px}
 header h1{margin:0 0 8px;font-size:24px}
+header h1 .v{font-size:13px;color:#93c5fd;font-weight:500;margin-left:10px;white-space:nowrap}
 header p{margin:3px 0;color:#cbd5e1;font-size:13.5px}
 .wrap{max-width:1400px;margin:22px auto;padding:0 18px 80px}
 .legend{display:flex;gap:18px;flex-wrap:wrap;font-size:13px;margin:14px 0;background:#fff;border:1px solid var(--bd);border-radius:10px;padding:10px 16px}
@@ -418,7 +419,7 @@ def lib_cell_html(lib_key, type_key, color):
         + "</div>"
     )
 
-def row1_cell_html(type_key, color, name):
+def row1_cell_html(type_key, color, name, with_prin=True):
     region, label, desc, col = REGIONS[type_key]
     src_map = {
         "text": "\n".join(stream_src["text"][:40]),
@@ -432,62 +433,78 @@ def row1_cell_html(type_key, color, name):
         "table": "20 个矩形 + 20 条文字 = 表格；PDF 没有「表格对象」",
         "form": "控件不在内容流，而是页面 Annots 上的 Widget 对象",
     }[type_key]
-    paras, terms = PRINCIPLE[type_key]
-    para_html = "".join("<p>" + esc(p) + "</p>" for p in paras)
-    terms_html = "".join(
-        "<tr><td class='tk'><code>" + esc(k) + "</code></td><td>" + esc(v) + "</td></tr>"
-        for k, v in terms
-    )
+    prin_html = ""
+    if with_prin:
+        paras, terms = PRINCIPLE[type_key]
+        para_html = "".join("<p>" + esc(p) + "</p>" for p in paras)
+        terms_html = "".join(
+            "<tr><td class='tk'><code>" + esc(k) + "</code></td><td>" + esc(v) + "</td></tr>"
+            for k, v in terms
+        )
+        prin_html = (
+            "<div class='lbl'>怎么渲染出来的（新手版）</div>"
+            + "<div class='prin'>" + para_html + "</div>"
+            + "<table class='gloss'>" + terms_html + "</table>"
+        )
     return (
         "<div class='cell'>"
         + "<div class='lbl'>PDF 原码</div>"
         + code_block(src_map[type_key])
         + "<div class='hint'>" + note + "</div>"
-        + "<div class='lbl'>怎么渲染出来的（新手版）</div>"
-        + "<div class='prin'>" + para_html + "</div>"
-        + "<table class='gloss'>" + terms_html + "</table>"
+        + prin_html
         + "<div class='lbl'>阅读器/浏览器打开的样子</div>"
         + "<img class='snap' src='" + render_region(region) + "' alt='" + esc(name) + " 区域渲染'>"
         + "</div>"
     )
 
-head_cells = ""
-for type_key, (region, name, desc, color) in REGIONS.items():
-    head_cells += "<th><span class='tag' style='background:" + color + "'>" + name + "</span><br>" \
-                  "<span class='hint'>" + esc(desc) + "</span></th>"
-
-row1 = "<tr><td class='rowhead'>PDF 原样<br><span class='none'>原码 + 渲染效果</span></td>" \
-       + "".join("<td>" + row1_cell_html(k, v[3], v[1]) + "</td>" for k, v in REGIONS.items()) + "</tr>"
 
 ROWS = [("PyMuPDF", "pymupdf", "对象树级：快、准、本地，无模型"),
         ("Unstructured", "unstructured", "版面分组 + 规则启发式（本机 fast 策略）"),
         ("LlamaParse", "llamaparse", "云端大模型语义重建（需 API Key + 网络）")]
 
-body_rows = ""
-for title, key, sub in ROWS:
-    cells = ""
-    for type_key in REGIONS:
-        color = REGIONS[type_key][3]
-        cells += "<td>" + lib_cell_html(key, type_key, color) + "</td>"
-    body_rows += "<tr><td class='rowhead'><div class='lib'>" + title + "</div>" \
-                 "<div class='none'>" + esc(sub) + "</div></td>" + cells + "</tr>"
 
-html_doc = """<!DOCTYPE html>
+def build_html(with_prin: bool) -> str:
+    head_cells = ""
+    for type_key, (region, name, desc, color) in REGIONS.items():
+        head_cells += "<th><span class='tag' style='background:" + color + "'>" + name + "</span><br>" \
+                      "<span class='hint'>" + esc(desc) + "</span></th>"
+
+    row1 = "<tr><td class='rowhead'>PDF 原样<br><span class='none'>原码 + 渲染效果"
+    if with_prin:
+        row1 += " + 渲染原理"
+    row1 += "</span></td>" \
+        + "".join("<td>" + row1_cell_html(k, v[3], v[1], with_prin) + "</td>" for k, v in REGIONS.items()) + "</tr>"
+
+    body_rows = ""
+    for title, key, sub in ROWS:
+        cells = ""
+        for type_key in REGIONS:
+            color = REGIONS[type_key][3]
+            cells += "<td>" + lib_cell_html(key, type_key, color) + "</td>"
+        body_rows += "<tr><td class='rowhead'><div class='lib'>" + title + "</div>" \
+                     "<div class='none'>" + esc(sub) + "</div></td>" + cells + "</tr>"
+
+    version_name = "（含 PDF 渲染原理·新手版）" if with_prin else "（基础版·仅原码 + 渲染效果）"
+    other_link = ("本页是完整版；基础版（无渲染原理）见 "
+                  "<code>docs/pdf-element-matrix-basic.html</code>") if with_prin else \
+                 ("本页是基础版；完整版（含渲染原理·新手版）见 <code>docs/pdf-element-matrix.html</code>")
+
+    html_doc = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>PDF 四类元素 x 三个库：提取矩阵讲义</title>
+<title>PDF 四类元素 x 三个库：提取矩阵讲义 __VERSION__</title>
 <style>__CSS__</style>
 </head>
 <body>
 <header>
-<h1>PDF 四类元素 x 三个库 —— 提取矩阵</h1>
+<h1>PDF 四类元素 x 三个库 —— 提取矩阵 <span class="v">__VERSION__</span></h1>
 <p>对象：__PDF__（第 1 页；四类元素在同一页，坐标由生成脚本确定）</p>
 <p>行 = 分析者（PDF 本身 / 三个库）；列 = 元素类型。PyMuPDF 与 Unstructured 的「提取结果」为真实运行输出，LlamaParse 行为预期输出（需 API Key）。</p>
 </header>
 <div class="wrap">
 <div class="legend">
-<span><b>行</b>：第 1 行 = PDF 原码 + 渲染效果；第 2-4 行 = 三个库的「怎么提取 / 原理 / 提取结果」</span>
+<span><b>行</b>：第 1 行 = PDF 原码 + 渲染效果__PRIN_HINT__；第 2-4 行 = 三个库的「怎么提取 / 原理 / 提取结果」</span>
 <span><b>颜色</b>：<span style="color:#1d4ed8">■ 文字</span> <span style="color:#15803d">■ 图片</span> <span style="color:#b45309">■ 表格</span> <span style="color:#7c3aed">■ 表单</span></span>
 </div>
 <div class="scroll">
@@ -498,22 +515,29 @@ __ROW1____ROWS__
 </div>
 <footer>
 复现：<code>.venv/bin/python scripts/make_sample_pdfs.py</code> →
-<code>.venv/bin/python scripts/build_matrix_html.py</code>（LLamaParse 列内容需 key 后手动验证）<br>
-生成脚本：scripts/build_matrix_html.py · 设计规格：docs/spec/pdf-element-matrix-spec.md
+<code>.venv/bin/python scripts/build_matrix_html.py</code>（同时生成两个版本）<br>
+生成脚本：scripts/build_matrix_html.py · 设计规格：docs/spec/pdf-element-matrix-spec.md<br>
+__OTHERLINK__
 </footer>
 </div>
 </body>
 </html>"""
 
-html_doc = (html_doc
+    return (html_doc
             .replace("__CSS__", CSS)
+            .replace("__VERSION__", version_name)
+            .replace("__PRIN_HINT__", " + 渲染原理" if with_prin else "")
+            .replace("__OTHERLINK__", other_link)
             .replace("__HEAD__", head_cells)
             .replace("__ROW1__", row1)
             .replace("__ROWS__", body_rows)
             .replace("__PDF__", esc(PDF_PATH.name)))
 
-OUT_PATH.write_text(html_doc, encoding="utf-8")
-print("已生成: {}".format(OUT_PATH))
-print("大小: {:.0f} KB | 元素总数: {} | 流分组: {} | 文本块: {}".format(
-    OUT_PATH.stat().st_size / 1024, len(els), len(groups), len(blocks)))
+
+BASIC_PATH = ROOT / "docs" / "pdf-element-matrix-basic.html"
+OUT_PATH.write_text(build_html(True), encoding="utf-8")
+BASIC_PATH.write_text(build_html(False), encoding="utf-8")
+print("已生成: {}（完整版，含渲染原理）".format(OUT_PATH))
+print("已生成: {}（基础版，无渲染原理）".format(BASIC_PATH))
+print("数据: 元素 {} 个 | 流分组 {} | 文本块 {}".format(len(els), len(groups), len(blocks)))
 doc.close()

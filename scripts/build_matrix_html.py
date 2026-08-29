@@ -288,6 +288,83 @@ LLAMA_EXPECTED = {
 # --------------------------------------------------------------------------
 # 6. 组装 HTML
 # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# 6. 行1 渲染原理（面向计算机新手：怎么渲染出来的 + 术语表 + 乱码解释）
+# --------------------------------------------------------------------------
+PRINCIPLE = {
+    "text": (
+        [
+            "把页面想成一块 595×842pt 的「画布」，内容流就是一张「作画指令单」，阅读器是照着指令单画画的小机器人。"
+            "文字部分每次都是一套固定动作：q（保存状态）→ BT（进入「写字模式」）→ Tm（把笔尖挪到坐标）→ "
+            "Tf（换字体和字号）→ TJ（写字）→ ET、Q（结束、定稿）。",
+            "你看到的每个字，都是机器人按字体文件里存好的「字形」打出来的，位置由 Tm 的坐标决定——"
+            "所以 PDF 里的文字既不是图片也不算纯文本，是「指令 + 字体」，这也是为什么能拿到每个字的精确坐标。",
+            "「乱码」真相：TJ 行里 <412053...> 是十六进制编码的一串字节。英文部分直接就是字符编码（41=A）；"
+            "中文部分是字体内部的「字形编号」（GID），要依靠嵌入字体附带的一张对照表（ToUnicode CMap）"
+            "翻译回汉字。这张表不全或出错的 PDF，提取出来就是乱码。另一个坑是「子集化」：为了省空间，"
+            "PDF 常把字体文件砍到只用到的几十个字形，字体名就被改成了 BNXTWZ+Nimbus... 这种带前缀的名字。",
+        ],
+        [
+            ("q / Q", "把画笔状态存起来 / 恢复——保证每段文字的修改不影响其他部分"),
+            ("BT / ET", "进入 / 退出「写字模式」（离开它写字符串是语法错误）"),
+            ("Tm", "文本矩阵：6 个数字的快捷方式，最后两个是笔尖起点 x、y（坐标原点在左下角）"),
+            ("Tf", "指定字体与字号（/helv 19 Tf = Helvetica 19 号）"),
+            ("TJ", "写字；方括号里的负数（-50 等）是字距微调，单位 1/1000 字号"),
+            ("<4120…>", "十六进制字节流：英文=ASCII；中文=字形编号 GID（靠 ToUnicode 表还原）"),
+        ],
+    ),
+    "image": (
+        [
+            "图片部分只有两条指令：cm 把画布坐标系做「缩放 + 平移」（决定图片放哪、放多大），"
+            "Do 把某个资源贴到当前坐标上——像把一张照片贴到墙上：先量好相框位置，再把照片按上去。",
+            "照片的大文件本身不在这两条指令里，而是藏在 /Resources 目录下的一个「图像对象」"
+            "（/Subtype /Image /Filter /DCTDecode，DCTDecode 就是 JPEG 解码器，/Width /Height 是像素尺寸）。"
+            "阅读器执行 Do → 找到对象 → 解码像素 → 按 cm 的尺寸贴到页面上。",
+        ],
+        [
+            ("cm", "变换矩阵 [a b c d e f]：a d=缩放，e f=平移（这里=缩放到 240×137pt 并移到 (60,327)）"),
+            ("Do", "把 /Resources 里名为 fzImg0 的图片资源「贴上」当前坐标"),
+            ("/Subtype /Image", "这是一个图像对象（XObject），存储像素数据"),
+            ("/Filter /DCTDecode", "像素流是 JPEG 压缩的（DCTDecode=JPEG 解码器）"),
+            ("/Width /Height", "原始像素尺寸：856×489（存原图靠它解出来）"),
+        ],
+    ),
+    "table": (
+        [
+            "表格在 PDF 里没有「表格」这个对象——它就像自己画格子再往里写字：每一格先 re 画一个矩形路径，"
+            "再用 .45 .45 .45 RG（灰色）+ S（描边）把矩形边框画成格子线，最后 BT…TJ 往格子里写字。",
+            "整张表 = 20 个矩形 + 20 条文字，所以阅读器也只是「画框写字」，它根本不知道这是表格。"
+            "「认出这是表、每行每列是什么」必须额外推理：PyMuPDF 用几何法（找网格线交叉点），"
+            "Unstructured/LlamaParse 用模型（视觉认出「这是表格」）。",
+        ],
+        [
+            ("re", "矩形路径：x y w h（本表每格 85×26pt 的框）"),
+            ("w", "线宽（0.8pt：格子线的粗细）"),
+            ("h", "把矩形路径闭合（首尾相连）"),
+            ("RG", "描边颜色（0.45 0.45 0.45 = 灰色）"),
+            ("S", "描边——「把线画出来」的指令，就是这一步才真正画出格子线"),
+        ],
+    ),
+    "form": (
+        [
+            "表单和上面三种不一样：它不是画在内容流里，而是「贴在页面上的电子标签」——挂在页面对象"
+            "的 /Annots（注释数组）里的 Widget 注解对象。可以类比成：页面是实体文件，控件是贴上的一张"
+            "「可填写的透明贴纸」。",
+            "阅读器的工作是：先按内容流画出页面（比如 Name: 这些标签文字），再依 /Rect 的位置叠加显示控件，"
+            "并按 /AP（外观流）把框和字画出来；你输入文字时，值被写进 /V 字段。",
+            "所以「提取表单」= 读这些注解对象（PyMuPDF 的 page.widgets()）；「填表」= 改写 /V 并重新生成外观流。",
+        ],
+        [
+            ("/Type /Annot /Subtype /Widget", "这是一个「控件注释」对象——不是页面内容，是附加功能"),
+            ("/FT /Tx", "字段类型：Tx=文本框（Ch=复选框，Btn=按钮）"),
+            ("/T (applicant_name)", "字段名：程序靠它找到这个框"),
+            ("/Rect [70 200 300 222]", "控件在页面上的位置和大小"),
+            ("/V (Ada Lovelace)", "当前填写值——「填表」的本质就是改写这个值"),
+            ("/AP …", "外观流：控件长什么样（框、底纹、字体）的绘制指令"),
+        ],
+    ),
+}
+
 CELLS["llamaparse"] = dict(LLAMA_EXPECTED)
 
 CSS = """
@@ -315,6 +392,12 @@ pre.src.soft{background:#f6f8fa;color:#334155;border:1px solid var(--bd);max-hei
 .lbl{font-size:12px;font-weight:700;color:#64748b;border-bottom:1px dashed #cbd5e1;margin:8px 0 2px;text-transform:uppercase;letter-spacing:.4px}
 .hint{font-size:12px;color:#64748b}
 .tiny{font-size:11.5px;color:#64748b;marggin-top:2px}
+.prin{margin:4px 0}
+.prin p{margin:4px 0 8px;font-size:12.5px;color:#334155}
+table.gloss{border-collapse:collapse;width:100%;margin:4px 0 8px}
+table.gloss td{border:1px solid #e5e7eb;padding:5px 7px;font-size:12px;background:#fff}
+table.gloss td.tk{width:110px;word-break:break-all}
+table.gloss code{background:#eef2f7;border-radius:3px;padding:0 4px;font-size:11.5px}
 .warn{background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:4px 8px;font-size:12px;margin:4px 0}
 code{background:#eef2f7;border-radius:3px;padding:0 4px;font-size:12px;font-family:ui-monospace,Menlo,Consolas,monospace}
 footer{margin-top:30px;font-size:12.5px;color:#64748b}
@@ -349,11 +432,20 @@ def row1_cell_html(type_key, color, name):
         "table": "20 个矩形 + 20 条文字 = 表格；PDF 没有「表格对象」",
         "form": "控件不在内容流，而是页面 Annots 上的 Widget 对象",
     }[type_key]
+    paras, terms = PRINCIPLE[type_key]
+    para_html = "".join("<p>" + esc(p) + "</p>" for p in paras)
+    terms_html = "".join(
+        "<tr><td class='tk'><code>" + esc(k) + "</code></td><td>" + esc(v) + "</td></tr>"
+        for k, v in terms
+    )
     return (
         "<div class='cell'>"
         + "<div class='lbl'>PDF 原码</div>"
         + code_block(src_map[type_key])
         + "<div class='hint'>" + note + "</div>"
+        + "<div class='lbl'>怎么渲染出来的（新手版）</div>"
+        + "<div class='prin'>" + para_html + "</div>"
+        + "<table class='gloss'>" + terms_html + "</table>"
         + "<div class='lbl'>阅读器/浏览器打开的样子</div>"
         + "<img class='snap' src='" + render_region(region) + "' alt='" + esc(name) + " 区域渲染'>"
         + "</div>"
